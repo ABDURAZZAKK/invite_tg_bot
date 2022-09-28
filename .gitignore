@@ -2,6 +2,7 @@
 /logs/
 /config.py
 /test_*
+/*.session
 /tgpars_reference
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode
