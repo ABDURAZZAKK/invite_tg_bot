@@ -222,6 +222,10 @@ def menu_admin_accgroups_show(message):
 
 
 def menu_admin_parsegroup(message):
+    if not db.db_users.get_first_client_account():
+        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+        return
+
     BOT.send_message(message.chat.id, 'Получение списка групп...')
     acc_groups_tuple = client_ops.get_acc_groups()
     if not acc_groups_tuple:
