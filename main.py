@@ -66,6 +66,8 @@ def inline_buttons_router(call):
             menu_admin_accounts_create(call.message)
         elif key == 'menu_admin_accounts_authorize':
             menu_admin_accounts_authorize(call.message, call.data)
+        elif key == 'menu_admin_parsegroup_select':
+            menu_admin_parsegroup_select(call.message, call.data)
 
         if is_del_inline_keyb:
             BOT.edit_message_reply_markup(chat_id=call.message.chat.id,
@@ -151,9 +153,11 @@ def mainmenu(message):
     states.set_state(message.chat.id, st.S_MAINMENU.value)
 
     keyb_items = []
-    row_width = 1
+    row_width = 2
 
     if user.id_role == ROLES['admin']:
+        keyb_items.append('Группы аккаунта')
+        keyb_items.append('Парсинг участников')
         keyb_items.append('Аккаунт')
 
     keyboard = make_keyboard(items=keyb_items, row_width=row_width, is_with_cancel=False)
@@ -169,8 +173,102 @@ def mainmenu_choice(message):
     user = db.db_users.get_user(message.chat.id)
 
     if user.id_role == ROLES['admin']:
-        if choice == 'Аккаунт':
+        if choice == 'Группы аккаунта':
+            menu_admin_accgroups_show(message)
+        elif choice == 'Парсинг участников':
+            menu_admin_parsegroup(message)
+        elif choice == 'Аккаунт':
             menu_admin_accounts_show(message)
+
+
+def menu_admin_accgroups_show(message):
+    if not db.db_users.get_first_client_account():
+        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+        return
+
+    BOT.send_message(message.chat.id, 'Получение списка групп...')
+    acc_groups_tuple = client_ops.get_acc_groups()
+    if not acc_groups_tuple:
+        BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
+        return
+
+    common_groups_lst, admin_groups_lst, is_has_groups = acc_groups_tuple
+    if not is_has_groups:
+        mes = 'Аккаунт не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
+        BOT.send_message(message.chat.id, mes)
+        return
+
+    mes = ''
+
+    mes += '🔸<b>Группы, в которых состоит аккаунт:</b>\n'
+    if common_groups_lst:
+        for common_group_item in common_groups_lst:
+            _, title_group = common_group_item
+            mes += f'{title_group}\n'
+    else:
+        mes += '-'
+
+    mes += '\n'
+
+    mes += '🔸<b>Собственные группы (где аккаунт имеет роль админа):</b>\n'
+    if admin_groups_lst:
+        for admin_group_item in admin_groups_lst:
+            _, title_group = admin_group_item
+            mes += f'{title_group}\n'
+    else:
+        mes += '-'
+
+    BOT.send_message(message.chat.id, mes, parse_mode='html')
+
+
+def menu_admin_parsegroup(message):
+    BOT.send_message(message.chat.id, 'Получение списка групп...')
+    acc_groups_tuple = client_ops.get_acc_groups()
+    if not acc_groups_tuple:
+        BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
+        return
+
+    common_groups_lst, _, is_has_groups = acc_groups_tuple
+    if not is_has_groups:
+        mes = 'Аккаунт не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
+        BOT.send_message(message.chat.id, mes)
+        return
+
+    keyboard_inline = types.InlineKeyboardMarkup()
+    keyboard_list = []
+    for common_group_item in common_groups_lst:
+        id_group, title_group = common_group_item
+        keyboard_list.append(types.InlineKeyboardButton(
+            text=title_group, callback_data=f"menu_admin_parsegroup_select;{id_group}"))
+    keyboard_inline.add(*keyboard_list, row_width=1)
+
+    mes = 'Выберите группу, из которой нужно сохранить список участников'
+    BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
+
+
+def menu_admin_parsegroup_select(message, data):
+    BOT.send_message(message.chat.id, 'Сохранение участников...')
+    params = data.split(';')
+    id_group = int(params[1])
+    menu_admin_parsegroup_savemembers(message, id_group)
+
+
+def menu_admin_parsegroup_savemembers(message, id_group):
+    members_lst = client_ops.get_members_in_group(id_group)
+    if not members_lst:
+        BOT.send_message(message.chat.id, 'Ошибка получения списка участников')
+        return
+
+    kol_new = db.db_users.add_new_members(members_lst)
+    if not kol_new:
+        BOT.send_message(message.chat.id, 'Ошибка записи списка участников в базу')
+        return
+
+    mes = 'Успешно сохранено\n\n'
+    mes += f'В группе участников: {len(members_lst)}\n'
+    mes += f'Из них сохранено новых в базу: {kol_new}'
+    BOT.send_message(message.chat.id, mes)
+    mainmenu(message)
 
 
 def menu_admin_accounts_show(message):
@@ -191,17 +289,17 @@ def menu_admin_accounts_show(message):
             mes += f'api_hash: {client_account.api_hash}\n'
             mes += f'телефон: {client_account.phone}\n\n'
             if client_account.banned == 1:
-                mes += f'🔴<b>Статус:</b> заблокирован Телеграмом'
+                mes += '🔴<b>Статус:</b> заблокирован Телеграмом'
             elif client_account.active == 0:
-                mes += f'⚫<b>Статус:</b> неактивен'
+                mes += '⚫<b>Статус:</b> неактивен'
             elif client_account.authorized == 0:
-                mes += f'🟡<b>Статус:</b> требуется авторизация'
+                mes += '🟡<b>Статус:</b> требуется авторизация'
                 keyboard_inline = types.InlineKeyboardMarkup()
                 keyboard_list.append(types.InlineKeyboardButton(text='Авторизовать',
                                      callback_data=f"menu_admin_accounts_authorize;{client_account.id}"))
                 keyboard_inline.add(*keyboard_list, row_width=1)
             else:
-                mes += f'🟢<b>Статус:</b> активен'
+                mes += '🟢<b>Статус:</b> активен'
     else:
         keyboard_inline = types.InlineKeyboardMarkup()
         keyboard_list.append(types.InlineKeyboardButton(text='Создать аккаунт',

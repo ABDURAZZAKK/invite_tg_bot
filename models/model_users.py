@@ -51,3 +51,13 @@ class ClientAccount(Base):
     date_reg = Column(DateTime, nullable=False, default=datetime.datetime.now)
     date_ban = Column(DateTime)
     active = Column(Boolean, nullable=False, default=True)
+
+
+class Member(Base):
+    __tablename__ = 'members'
+    __table_args__ = {"comment": "Спарсенные участники групп"}
+
+    id = Column(BigInteger, primary_key=True)
+    fio = Column(String(300), nullable=False)
+    nick = Column(String(100))
+    date_add = Column(DateTime, nullable=False, default=datetime.datetime.now)
