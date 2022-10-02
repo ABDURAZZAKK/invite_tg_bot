@@ -5,6 +5,7 @@ import datetime
 import logging
 import logging.handlers as loghandlers
 import os
+import random
 import sys
 import threading
 import time
@@ -16,6 +17,7 @@ import client_ops
 import config
 import db
 import states
+from models.model_client import INVITE_SESSION_RESULTS
 from models.model_users import ROLES
 from states import States as st
 
@@ -68,6 +70,10 @@ def inline_buttons_router(call):
             menu_admin_accounts_authorize(call.message, call.data)
         elif key == 'menu_admin_parsegroup_select':
             menu_admin_parsegroup_select(call.message, call.data)
+        elif key == 'menu_admin_invite_group_select':
+            menu_admin_invite_group_select(call.message, call.data)
+        elif key == 'menu_admin_invite_stop':
+            menu_admin_invite_stop(call.message)
 
         if is_del_inline_keyb:
             BOT.edit_message_reply_markup(chat_id=call.message.chat.id,
@@ -156,8 +162,9 @@ def mainmenu(message):
     row_width = 2
 
     if user.id_role == ROLES['admin']:
-        keyb_items.append('Группы аккаунта')
+        keyb_items.append('Группы')
         keyb_items.append('Парсинг участников')
+        keyb_items.append('Рассылка инвайтов')
         keyb_items.append('Аккаунт')
 
     keyboard = make_keyboard(items=keyb_items, row_width=row_width, is_with_cancel=False)
@@ -173,16 +180,18 @@ def mainmenu_choice(message):
     user = db.db_users.get_user(message.chat.id)
 
     if user.id_role == ROLES['admin']:
-        if choice == 'Группы аккаунта':
+        if choice == 'Группы':
             menu_admin_accgroups_show(message)
         elif choice == 'Парсинг участников':
             menu_admin_parsegroup(message)
+        elif choice == 'Рассылка инвайтов':
+            menu_admin_invites(message)
         elif choice == 'Аккаунт':
             menu_admin_accounts_show(message)
 
 
 def menu_admin_accgroups_show(message):
-    if not db.db_users.get_first_client_account():
+    if not db.db_client.get_first_client_account():
         BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
         return
 
@@ -222,7 +231,7 @@ def menu_admin_accgroups_show(message):
 
 
 def menu_admin_parsegroup(message):
-    if not db.db_users.get_first_client_account():
+    if not db.db_client.get_first_client_account():
         BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
         return
 
@@ -263,7 +272,7 @@ def menu_admin_parsegroup_savemembers(message, id_group):
         BOT.send_message(message.chat.id, 'Ошибка получения списка участников')
         return
 
-    kol_new = db.db_users.add_new_members(members_lst)
+    kol_new = db.db_client.add_new_members(members_lst)
     if not kol_new:
         BOT.send_message(message.chat.id, 'Ошибка записи списка участников в базу')
         return
@@ -275,12 +284,74 @@ def menu_admin_parsegroup_savemembers(message, id_group):
     mainmenu(message)
 
 
+def menu_admin_invites(message):
+    if not db.db_client.get_first_client_account():
+        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+        return
+
+    keyboard_inline = types.InlineKeyboardMarkup()
+    keyboard_list = []
+    active_session_item = db.db_client.get_active_invite_session()
+    if active_session_item:
+        keyboard_list.append(types.InlineKeyboardButton(text='Остановить', callback_data="menu_admin_invite_stop;1"))
+        keyboard_inline.add(*keyboard_list, row_width=1)
+        mes = 'Идёт отправка инвайтов'
+    else:
+        BOT.send_message(message.chat.id, 'Получение списка групп...')
+        acc_groups_tuple = client_ops.get_acc_groups()
+        if not acc_groups_tuple:
+            BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
+            return
+
+        _, admin_groups_lst, is_has_groups = acc_groups_tuple
+        if not is_has_groups:
+            mes = 'Аккаунт не состоит ни в одной группе'
+            BOT.send_message(message.chat.id, mes)
+            return
+
+        if not admin_groups_lst:
+            mes = 'Аккаунт должен быть админом (с правами добавления участников) хотя бы в одной группе, в которую будем приглашать новых участников'
+            BOT.send_message(message.chat.id, mes)
+            return
+
+        for admin_group_item in admin_groups_lst:
+            id_group, title_group = admin_group_item
+            keyboard_list.append(types.InlineKeyboardButton(
+                text=title_group, callback_data=f"menu_admin_invite_group_select;{id_group}"))
+        keyboard_inline.add(*keyboard_list, row_width=1)
+        mes = 'Выберите группу, в которую будем приглашать участников'
+
+    BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
+
+
+def menu_admin_invite_group_select(message, data):
+    params = data.split(';')
+    id_group_destination = int(params[1])
+    menu_admin_invite_start(message, id_group_destination)
+
+
+def menu_admin_invite_start(message, id_group_destination):
+    if db.db_client.start_invite_session(id_group_destination):
+        BOT.send_message(message.chat.id, 'Рассылка инвайтов начата')
+        mainmenu(message)
+    else:
+        BOT.send_message(message.chat.id, 'Ошибка старта рассылки')
+
+
+def menu_admin_invite_stop(message):
+    if db.db_client.stop_invite_session(INVITE_SESSION_RESULTS['closed_manually']):
+        BOT.send_message(message.chat.id, 'Рассылка инвайтов остановлена')
+        mainmenu(message)
+    else:
+        BOT.send_message(message.chat.id, 'Ошибка остановки рассылки')
+
+
 def menu_admin_accounts_show(message):
     BOT.send_message(message.chat.id, 'Проверка аккаунтов...')
     if not client_ops.check_account_availability():
         BOT.send_message(message.chat.id, 'Ошибка проверки аккаунтов')
         return
-    client_accounts_tuple = db.db_users.get_all_client_accounts()
+    client_accounts_tuple = db.db_client.get_all_client_accounts()
 
     keyboard_inline = None
     keyboard_list = []
@@ -315,7 +386,7 @@ def menu_admin_accounts_show(message):
 
 
 def menu_admin_accounts_create(message):
-    client_accounts_tuple = db.db_users.get_all_client_accounts()
+    client_accounts_tuple = db.db_client.get_all_client_accounts()
     if client_accounts_tuple:
         BOT.send_message(message.chat.id, 'Пока что доступен только 1 аккаунт')
         mainmenu(message)
@@ -400,7 +471,7 @@ def menu_admin_accounts_create_save(message):
     api_hash = db.db_tempvals.get_tmpval(id_user, st.S_MENU_ADMIN_CREATEACC_API_HASH_ASK.name).textval
     phone = db.db_tempvals.get_tmpval(id_user, st.S_MENU_ADMIN_CREATEACC_API_PHONE_ASK.name).textval
 
-    if db.db_users.add_new_client_account(api_id, api_hash, phone):
+    if db.db_client.add_new_client_account(api_id, api_hash, phone):
         BOT.send_message(message.chat.id, 'Клиентский аккаунт добавлен')
         menu_admin_accounts_show(message)
         mainmenu(message)
@@ -423,7 +494,7 @@ def menu_admin_accounts_authorize(message, data):
 def menu_admin_accounts_authorize_code_ask(message):
     id_account = db.db_tempvals.get_tmpval(
         message.chat.id, st.S_MENU_ADMIN_AUTHACC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
-    client_account_item = db.db_users.get_client_account(id_account)
+    client_account_item = db.db_client.get_client_account(id_account)
     keyboard = make_keyboard(is_with_cancel=False)
     mes = f'Напишите код авторизации, который пришёл на номер {client_account_item.phone}'
 
@@ -497,12 +568,29 @@ def timer_1min():
             time.sleep(cycle_period)
 
 
+def timer_inviter():
+    """Таймер инвайтера"""
+    LOGGER.info('Timer_inviter thread started...')
+    while True:
+        cycle_period = random.randrange(15, 30)
+        try:
+            client_ops.send_invites()
+            time.sleep(cycle_period)
+        except Exception as ex_tm:
+            LOGGER.error(ex_tm)
+            time.sleep(cycle_period)
+
+
 if __name__ == '__main__':
     startup_actions()
 
     TIMER_1MIN_THREAD = threading.Thread(target=timer_1min)
     TIMER_1MIN_THREAD.daemon = True
     TIMER_1MIN_THREAD.start()
+
+    TIMER_INVITER_THREAD = threading.Thread(target=timer_inviter)
+    TIMER_INVITER_THREAD.daemon = True
+    TIMER_INVITER_THREAD.start()
 
     try:
         BOT.infinity_polling(allowed_updates=util.update_types)
