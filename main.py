@@ -17,7 +17,8 @@ import client_ops
 import config
 import db
 import states
-from models.model_client import INVITE_SESSION_RESULTS
+from models.model_client import (INVITE_SESSION_RESULTS, AccountFuncClassifier,
+                                 ClientAccount)
 from models.model_users import ROLES
 from states import States as st
 
@@ -68,6 +69,8 @@ def inline_buttons_router(call):
             menu_admin_accounts_create(call.message)
         elif key == 'menu_admin_accounts_authorize':
             menu_admin_accounts_authorize(call.message, call.data)
+        elif key == 'menu_admin_accounts_changefunc':
+            menu_admin_accounts_changefunc(call.message, call.data)
         elif key == 'menu_admin_parsegroup_select':
             menu_admin_parsegroup_select(call.message, call.data)
         elif key == 'menu_admin_invite_group_select':
@@ -165,7 +168,7 @@ def mainmenu(message):
         keyb_items.append('Группы')
         keyb_items.append('Парсинг участников')
         keyb_items.append('Рассылка инвайтов')
-        keyb_items.append('Аккаунт')
+        keyb_items.append('Аккаунты')
 
     keyboard = make_keyboard(items=keyb_items, row_width=row_width, is_with_cancel=False)
     mes = 'Вы в главном меню'
@@ -186,7 +189,7 @@ def mainmenu_choice(message):
             menu_admin_parsegroup(message)
         elif choice == 'Рассылка инвайтов':
             menu_admin_invites(message)
-        elif choice == 'Аккаунт':
+        elif choice == 'Аккаунты':
             menu_admin_accounts_show(message)
 
 
@@ -273,7 +276,7 @@ def menu_admin_parsegroup_savemembers(message, id_group):
         return
 
     kol_new = db.db_client.add_new_members(members_lst)
-    if not kol_new:
+    if kol_new is None:
         BOT.send_message(message.chat.id, 'Ошибка записи списка участников в базу')
         return
 
@@ -348,49 +351,62 @@ def menu_admin_invite_stop(message):
 
 def menu_admin_accounts_show(message):
     BOT.send_message(message.chat.id, 'Проверка аккаунтов...')
-    if not client_ops.check_account_availability():
-        BOT.send_message(message.chat.id, 'Ошибка проверки аккаунтов')
-        return
     client_accounts_tuple = db.db_client.get_all_client_accounts()
-
-    keyboard_inline = None
-    keyboard_list = []
-    mes = ''
 
     if client_accounts_tuple:
         for client_account in client_accounts_tuple:
-            mes += f'<b>Аккаунт #{client_account.id}</b>\n'
+            client_ops.check_account_availability(client_account.id)
+
+            keyboard_inline = types.InlineKeyboardMarkup()
+            keyboard_list = []
+            keyboard_list.append(types.InlineKeyboardButton(text='Сменить назначение',
+                                 callback_data=f"menu_admin_accounts_changefunc;{client_account.id}"))
+
+            mes = f'<b>Аккаунт #{client_account.id}</b>\n'
             mes += f'api_id: {client_account.api_id}\n'
             mes += f'api_hash: {client_account.api_hash}\n'
             mes += f'телефон: {client_account.phone}\n\n'
+
+            account_func_item = db.db_classifiers.find_classifier_object(
+                AccountFuncClassifier, id_object=client_account.id_account_func)
+            mes += f'📌<b>Назначение аккаунта:</b> {account_func_item.name}\n'
+
             if client_account.banned == 1:
                 mes += '🔴<b>Статус:</b> заблокирован Телеграмом'
             elif client_account.active == 0:
                 mes += '⚫<b>Статус:</b> неактивен'
             elif client_account.authorized == 0:
                 mes += '🟡<b>Статус:</b> требуется авторизация'
-                keyboard_inline = types.InlineKeyboardMarkup()
                 keyboard_list.append(types.InlineKeyboardButton(text='Авторизовать',
                                      callback_data=f"menu_admin_accounts_authorize;{client_account.id}"))
-                keyboard_inline.add(*keyboard_list, row_width=1)
             else:
                 mes += '🟢<b>Статус:</b> активен'
+
+            if is_account_warm(client_account):
+                mes += '\n'
+                mes += '🔥<b>Аккаунт на прогреве</b>'
+
+            keyboard_inline.add(*keyboard_list, row_width=1)
+            BOT.send_message(message.chat.id, mes, parse_mode='html', reply_markup=keyboard_inline)
+
+        keyboard_inline = types.InlineKeyboardMarkup()
+        keyboard_list = []
+        keyboard_list.append(types.InlineKeyboardButton(text='Добавить новый',
+                             callback_data=f"menu_admin_accounts_create;1"))
+        keyboard_inline.add(*keyboard_list, row_width=1)
+        mes = 'Новый аккаунт?'
+        BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
+
     else:
         keyboard_inline = types.InlineKeyboardMarkup()
         keyboard_list.append(types.InlineKeyboardButton(text='Создать аккаунт',
                              callback_data="menu_admin_accounts_create;1"))
         keyboard_inline.add(*keyboard_list, row_width=1)
-        mes += 'Нет клиентских аккаунтов'
-
-    BOT.send_message(message.chat.id, mes, parse_mode='html', reply_markup=keyboard_inline)
+        mes = 'Нет клиентских аккаунтов'
+        BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
 
 
 def menu_admin_accounts_create(message):
-    client_accounts_tuple = db.db_client.get_all_client_accounts()
-    if client_accounts_tuple:
-        BOT.send_message(message.chat.id, 'Пока что доступен только 1 аккаунт')
-        mainmenu(message)
-        return
     menu_admin_accounts_create_api_id_ask(message)
 
 
@@ -518,10 +534,55 @@ def menu_admin_accounts_authorize_code_save(message):
     mainmenu(message)
 
 
-@BOT.message_handler(content_types=['text'])
-def dummy_message(message):
-    """Любая другая текстовая команда"""
-    cmd_start(message)
+def menu_admin_accounts_changefunc(message, data):
+    params = data.split(';')
+    id_account = int(params[1])
+    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, intval=id_account)
+    menu_admin_accounts_changefunc_func_ask(message)
+
+
+def menu_admin_accounts_changefunc_func_ask(message):
+    id_account = db.db_tempvals.get_tmpval(
+        message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
+    client_account_item = db.db_client.get_client_account(id_account)
+    available_funcs_tuple = db.db_client.get_available_acc_funcs(client_account_item.id_account_func)
+
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    keyboard_list = []
+    for func_item in available_funcs_tuple:
+        keyboard_list.append(func_item.name)
+    keyboard.add(*keyboard_list, row_width=2)
+
+    mes = f'Какое назначение сделать аккаунту #{client_account_item.id}?'
+
+    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
+    states.set_state(message.chat.id, st.S_MENU_ADMIN_ACCFUNC_FUNC_ASK.value)
+
+
+@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_ACCFUNC_FUNC_ASK.value)
+def menu_admin_accounts_changefunc_func_save(message):
+    choice = message.text
+    id_account = db.db_tempvals.get_tmpval(
+        message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
+    client_account_item = db.db_client.get_client_account(id_account)
+    available_funcs_tuple = db.db_client.get_available_acc_funcs(client_account_item.id_account_func)
+    if choice not in [classif.name for classif in available_funcs_tuple]:
+        BOT.send_message(message.chat.id, 'Выберите из предложенного!')
+        return
+
+    new_func_item = db.db_classifiers.find_classifier_object(AccountFuncClassifier, name_object=choice)
+    if db.db_client.set_acc_func(id_account, new_func_item.id):
+        BOT.send_message(message.chat.id, 'Назначение изменено')
+        mainmenu(message)
+    else:
+        BOT.send_message(message.chat.id, 'Ошибка изменения назначения')
+
+
+def is_account_warm(client_account_item: ClientAccount) -> bool:  # TODO копия из client_ops.py
+    warm_days = 5
+    if client_account_item.date_reg >= datetime.datetime.now() - datetime.timedelta(days=warm_days):
+        return True
+    return False
 
 
 def make_keyboard(items=None, row_width=1, fill_with_classifier=None, is_classifier_reverse=False, is_with_cancel=True):
@@ -549,6 +610,12 @@ def make_keyboard(items=None, row_width=1, fill_with_classifier=None, is_classif
     return keyboard
 
 
+@BOT.message_handler(content_types=['text'])
+def dummy_message(message):
+    """Любая другая текстовая команда"""
+    cmd_start(message)
+
+
 def startup_actions():
     """Стартовые действия"""
     pass
@@ -572,7 +639,7 @@ def timer_inviter():
     """Таймер инвайтера"""
     LOGGER.info('Timer_inviter thread started...')
     while True:
-        cycle_period = random.randrange(15, 30)
+        cycle_period = 60  # random.randrange(15, 30)
         try:
             client_ops.send_invites()
             time.sleep(cycle_period)

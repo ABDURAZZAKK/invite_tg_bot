@@ -19,12 +19,20 @@ INVITE_SEND_RESULTS = {
     'invite_restricted': 2,
 }
 
+ACCOUNT_FUNCS = {
+    'inviting': 1,
+    'parsing': 2,
+    'mailing': 3,
+}
+
 
 class ClientAccount(Base):
     __tablename__ = 'client_accounts'
     __table_args__ = {"comment": "Аккаунты клиента-парсера"}
 
     id = Column(BigInteger, primary_key=True)
+    id_account_func = Column(Integer, ForeignKey('n_account_funcs.id'),
+                             nullable=False, default=ACCOUNT_FUNCS['inviting'])
     api_id = Column(String(100), nullable=False)
     api_hash = Column(String(100), nullable=False)
     phone = Column(String(100), nullable=False)
@@ -83,3 +91,11 @@ class InviteSend(Base):
     id_member = Column(BigInteger, ForeignKey('members.id'), nullable=False)
     datetime_send = Column(DateTime, nullable=False, default=datetime.datetime.now)
     result = Column(Integer, ForeignKey('n_invite_send_results.id'))
+
+
+class AccountFuncClassifier(Base):
+    __tablename__ = 'n_account_funcs'
+    __table_args__ = {"comment": "Функция аккаунта"}
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(50), nullable=False, unique=True)

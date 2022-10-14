@@ -1,4 +1,5 @@
 """Операции с Telethon"""
+import datetime
 import logging
 from asyncio import new_event_loop, set_event_loop
 
@@ -11,26 +12,26 @@ from telethon.tl.types import InputPeerEmpty
 
 import db
 from models.model_client import (INVITE_SEND_RESULTS, INVITE_SESSION_RESULTS,
-                                 Member)
+                                 ClientAccount, Member)
 
 LOGGER = logging.getLogger('applog')
 
-MAX_INVITES_PER_DAY = 40
 
+def check_account_availability(id_account: int) -> bool:
+    client_account_item = db.db_client.get_client_account(id_account)
+    try:
+        set_event_loop(new_event_loop())
+        client = TelegramClient(client_account_item.phone, client_account_item.api_id, client_account_item.api_hash)
+        client.connect()
+        if not client.is_user_authorized():
+            db.db_client.update_client_account_auth(client_account_item.id, 0)
+        client.disconnect()
 
-def check_account_availability() -> bool:
-    client_accounts_tuple = db.db_client.get_all_client_accounts()
-    if client_accounts_tuple:
-        for client_account_item in client_accounts_tuple:
-            # TODO обработка нескольких аккаунтов (с паузой)
-            set_event_loop(new_event_loop())
-            client = TelegramClient(client_account_item.phone, client_account_item.api_id, client_account_item.api_hash)
-            client.connect()
-            if not client.is_user_authorized():
-                db.db_client.update_client_account_auth(client_account_item.id, 0)
-            client.disconnect()
-
-    return True
+        return True
+    except Exception as ex:
+        LOGGER.error(ex)
+        db.db_client.update_client_account_active(client_account_item.id, 0)
+        return False
 
 
 def send_auth_code(id_account: int) -> bool:
@@ -166,15 +167,32 @@ def get_members_in_group(id_group: int):
 
 
 def send_invites():
+    max_invites_per_day = 29
+
     active_session_item = db.db_client.get_active_invite_session()
     if not active_session_item:
         return
 
-    if db.db_client.get_send_kol() >= MAX_INVITES_PER_DAY:
-        return
-
     client_account_item = db.db_client.get_first_client_account()
     if not client_account_item:
+        return
+
+    if db.db_client.get_send_kol() >= max_invites_per_day:
+        LOGGER.warning('max invites reached')
+        return
+
+    if is_account_warm(client_account_item) and db.db_client.get_send_kol() >= 4:
+        LOGGER.warning('account warm and sends >= 4')
+        return
+
+    last_invite_send_item = db.db_client.get_last_invite_send()
+    if last_invite_send_item.datetime_send >= datetime.datetime.now() - datetime.timedelta(minutes=4):
+        LOGGER.warning('skip inviting in this minute due to 4 mins pause')
+        return
+
+    continuous_send_6_days_tuple = db.db_client.get_continuous_send_6_days()
+    if len(continuous_send_6_days_tuple >= 6):
+        LOGGER.warning('skip inviting in this minute due to 6 days use')
         return
 
     set_event_loop(new_event_loop())
@@ -207,3 +225,10 @@ def send_invites():
         LOGGER.error(ex)
 
     client.disconnect()
+
+
+def is_account_warm(client_account_item: ClientAccount) -> bool:
+    warm_days = 5
+    if client_account_item.date_reg >= datetime.datetime.now() - datetime.timedelta(days=warm_days):
+        return True
+    return False

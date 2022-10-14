@@ -1,8 +1,9 @@
 """Клиент (парсер, инвайтер)"""
 import datetime
 
-from models.model_client import (ClientAccount, InviteSend, InviteSession,
-                                 Member)
+from models.model_client import (AccountFuncClassifier, ClientAccount,
+                                 InviteSend, InviteSession, Member)
+from sqlalchemy import desc
 
 from db.connection import Session
 
@@ -54,6 +55,17 @@ def update_client_account_auth(id_account: int, authorized: int) -> bool:
     account_item = session.query(ClientAccount).get(id_account)
     if account_item:
         account_item.authorized = authorized
+        session.add(account_item)
+        session.commit()
+    session.close()
+    return True
+
+
+def update_client_account_active(id_account: int, active: int) -> bool:
+    session = Session()
+    account_item = session.query(ClientAccount).get(id_account)
+    if account_item:
+        account_item.active = active
         session.add(account_item)
         session.commit()
     session.close()
@@ -131,6 +143,30 @@ def get_send_kol() -> int:
     return len(value)
 
 
+def get_last_invite_send() -> InviteSend:
+    session = Session()
+    value = session.query(InviteSend).order_by(desc(InviteSend.id)).first()
+    session.close()
+    return value
+
+
+def get_continuous_send_6_days():
+    """В каких из последних 6-ти дней была использована отправка"""
+    connection = db_conn.open_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute("""
+            SELECT 
+            DISTINCT DATE(datetime_send)
+            FROM invite_sends
+            WHERE DATE(datetime_send)>=CURDATE() - INTERVAL 6 DAY
+        """)
+        values_tuple = cursor.fetchall()
+    finally:
+        db_conn.close_connection(connection)
+    return values_tuple
+
+
 def get_random_member_to_invite(id_group_destination: int):
     # id_group_destination - указываем группу, чтобы выбрать случайного юзера, которого мы туда ещё не приглашали
     connection = db_conn.open_connection()
@@ -172,6 +208,24 @@ def mark_member_invite_restricted(id_member: int) -> bool:
     if member_item:
         member_item.invite_restricted = 1
         session.add(member_item)
+        session.commit()
+    session.close()
+    return True
+
+
+def get_available_acc_funcs(id_cur_func: int):
+    session = Session()
+    values_tuple = session.query(AccountFuncClassifier).filter(AccountFuncClassifier.id != id_cur_func).all()
+    session.close()
+    return values_tuple
+
+
+def set_acc_func(id_account: int, id_func: int) -> bool:
+    session = Session()
+    account_item = session.query(ClientAccount).get(id_account)
+    if account_item:
+        account_item.id_account_func = id_func
+        session.add(account_item)
         session.commit()
     session.close()
     return True
