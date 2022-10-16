@@ -181,7 +181,7 @@ def inviting():
             continue
 
         last_invite_send_item = db.db_client.get_last_invite_send(account_item)
-        if last_invite_send_item.datetime_send >= datetime.datetime.now() - datetime.timedelta(minutes=4):
+        if last_invite_send_item and last_invite_send_item.datetime_send >= datetime.datetime.now() - datetime.timedelta(minutes=4):
             LOGGER.warning(f'skip inviting in this minute due to 4 mins pause on acc #{account_item.id}')
             continue
 
