@@ -88,6 +88,7 @@ class InviteSend(Base):
 
     id = Column(BigInteger, primary_key=True)
     id_invite_session = Column(BigInteger, ForeignKey('invite_sessions.id'), nullable=False)
+    id_account = Column(BigInteger, ForeignKey('client_accounts.id'), nullable=False)
     id_member = Column(BigInteger, ForeignKey('members.id'), nullable=False)
     datetime_send = Column(DateTime, nullable=False, default=datetime.datetime.now)
     result = Column(Integer, ForeignKey('n_invite_send_results.id'))

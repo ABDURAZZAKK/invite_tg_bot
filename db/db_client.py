@@ -18,18 +18,18 @@ def get_all_client_accounts():
     return values_tuple
 
 
+def get_norm_client_accounts():
+    """Все рабочие клиентские аккаунты"""
+    session = Session()
+    values_tuple = session.query(ClientAccount).filter(ClientAccount.active == 1, ClientAccount.authorized == 1).all()
+    session.close()
+    return values_tuple
+
+
 def get_client_account(id_account: int) -> ClientAccount:
     """Конкретный аккаунт"""
     session = Session()
     value = session.query(ClientAccount).get(id_account)
-    session.close()
-    return value
-
-
-def get_first_client_account() -> ClientAccount:
-    """Первый рабочий аккаунт"""
-    session = Session()
-    value = session.query(ClientAccount).filter(ClientAccount.authorized == 1, ClientAccount.active == 1).first()
     session.close()
     return value
 
@@ -134,23 +134,24 @@ def stop_invite_session(result: int) -> bool:
     return True
 
 
-def get_send_kol() -> int:
+def get_send_kol(account_item: ClientAccount) -> int:
     """Количество отправленных инвайтов за сутки"""
     session = Session()
-    value = session.query(InviteSend).filter(InviteSend.datetime_send >=
-                                             datetime.datetime.now() - datetime.timedelta(days=1)).all()
+    value = session.query(InviteSend).filter(InviteSend.id_account == account_item.id,
+                                             InviteSend.datetime_send >= datetime.datetime.now() - datetime.timedelta(days=1)).all()
     session.close()
     return len(value)
 
 
-def get_last_invite_send() -> InviteSend:
+def get_last_invite_send(account_item: ClientAccount) -> InviteSend:
     session = Session()
-    value = session.query(InviteSend).order_by(desc(InviteSend.id)).first()
+    value = session.query(InviteSend).filter(InviteSend.id_account ==
+                                             account_item.id).order_by(desc(InviteSend.id)).first()
     session.close()
     return value
 
 
-def get_continuous_send_6_days():
+def get_continuous_send_6_days(account_item: ClientAccount):
     """В каких из последних 6-ти дней была использована отправка"""
     connection = db_conn.open_connection()
     try:
@@ -159,8 +160,9 @@ def get_continuous_send_6_days():
             SELECT 
             DISTINCT DATE(datetime_send)
             FROM invite_sends
-            WHERE DATE(datetime_send)>=CURDATE() - INTERVAL 6 DAY
-        """)
+            WHERE id_account = %s
+            AND DATE(datetime_send)>=CURDATE() - INTERVAL 6 DAY
+        """, (account_item.id,))
         values_tuple = cursor.fetchall()
     finally:
         db_conn.close_connection(connection)
@@ -189,10 +191,11 @@ def get_random_member_to_invite(id_group_destination: int):
     return None
 
 
-def create_invite_send(id_invite_session: int, id_member: int, result: int) -> bool:
+def create_invite_send(id_invite_session: int, id_account: int, id_member: int, result: int) -> bool:
     session = Session()
     invite_send_item = InviteSend(
         id_invite_session=id_invite_session,
+        id_account=id_account,
         id_member=id_member,
         result=result,
     )

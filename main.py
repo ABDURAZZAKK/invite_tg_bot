@@ -194,59 +194,63 @@ def mainmenu_choice(message):
 
 
 def menu_admin_accgroups_show(message):
-    if not db.db_client.get_first_client_account():
-        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
+    if not norm_accounts_tuple:
+        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
         return
-
     BOT.send_message(message.chat.id, 'Получение списка групп...')
-    acc_groups_tuple = client_ops.get_acc_groups()
-    if not acc_groups_tuple:
-        BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
-        return
 
-    common_groups_lst, admin_groups_lst, is_has_groups = acc_groups_tuple
-    if not is_has_groups:
-        mes = 'Аккаунт не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
-        BOT.send_message(message.chat.id, mes)
-        return
+    for account_item in norm_accounts_tuple:
+        acc_groups_tuple = client_ops.get_acc_groups(account_item)
+        if not acc_groups_tuple:
+            BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
+            return
 
-    mes = ''
+        common_groups_lst, admin_groups_lst, is_has_groups = acc_groups_tuple
+        if not is_has_groups:
+            mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
+            BOT.send_message(message.chat.id, mes)
+            return
 
-    mes += '🔸<b>Группы, в которых состоит аккаунт:</b>\n'
-    if common_groups_lst:
-        for common_group_item in common_groups_lst:
-            _, title_group = common_group_item
-            mes += f'{title_group}\n'
-    else:
-        mes += '-'
+        mes = ''
 
-    mes += '\n'
+        mes += f'🔸<b>Группы, в которых состоит аккаунт #{account_item.id}:</b>\n'
+        if common_groups_lst:
+            for common_group_item in common_groups_lst:
+                _, title_group = common_group_item
+                mes += f'{title_group}\n'
+        else:
+            mes += '-'
 
-    mes += '🔸<b>Собственные группы (где аккаунт имеет роль админа):</b>\n'
-    if admin_groups_lst:
-        for admin_group_item in admin_groups_lst:
-            _, title_group = admin_group_item
-            mes += f'{title_group}\n'
-    else:
-        mes += '-'
+        mes += '\n'
 
-    BOT.send_message(message.chat.id, mes, parse_mode='html')
+        mes += f'🔸<b>Собственные группы (где аккаунт #{account_item.id} имеет роль админа):</b>\n'
+        if admin_groups_lst:
+            for admin_group_item in admin_groups_lst:
+                _, title_group = admin_group_item
+                mes += f'{title_group}\n'
+        else:
+            mes += '-'
+
+        BOT.send_message(message.chat.id, mes, parse_mode='html')
 
 
 def menu_admin_parsegroup(message):
-    if not db.db_client.get_first_client_account():
-        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
+    if not norm_accounts_tuple:
+        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
         return
-
     BOT.send_message(message.chat.id, 'Получение списка групп...')
-    acc_groups_tuple = client_ops.get_acc_groups()
+
+    account_item = norm_accounts_tuple[0]
+    acc_groups_tuple = client_ops.get_acc_groups(account_item)
     if not acc_groups_tuple:
-        BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
+        BOT.send_message(message.chat.id, f'Ошибка загрузки групп у аккаунта #{account_item.id}')
         return
 
     common_groups_lst, _, is_has_groups = acc_groups_tuple
     if not is_has_groups:
-        mes = 'Аккаунт не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
+        mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
         BOT.send_message(message.chat.id, mes)
         return
 
@@ -255,7 +259,7 @@ def menu_admin_parsegroup(message):
     for common_group_item in common_groups_lst:
         id_group, title_group = common_group_item
         keyboard_list.append(types.InlineKeyboardButton(
-            text=title_group, callback_data=f"menu_admin_parsegroup_select;{id_group}"))
+            text=title_group, callback_data=f"menu_admin_parsegroup_select;{id_group};{account_item.id}"))
     keyboard_inline.add(*keyboard_list, row_width=1)
 
     mes = 'Выберите группу, из которой нужно сохранить список участников'
@@ -266,11 +270,12 @@ def menu_admin_parsegroup_select(message, data):
     BOT.send_message(message.chat.id, 'Сохранение участников...')
     params = data.split(';')
     id_group = int(params[1])
-    menu_admin_parsegroup_savemembers(message, id_group)
+    id_account = int(params[2])
+    menu_admin_parsegroup_savemembers(message, id_group, id_account)
 
 
-def menu_admin_parsegroup_savemembers(message, id_group):
-    members_lst = client_ops.get_members_in_group(id_group)
+def menu_admin_parsegroup_savemembers(message, id_group, id_account):
+    members_lst = client_ops.get_members_in_group(id_group, id_account)
     if not members_lst:
         BOT.send_message(message.chat.id, 'Ошибка получения списка участников')
         return
@@ -288,8 +293,9 @@ def menu_admin_parsegroup_savemembers(message, id_group):
 
 
 def menu_admin_invites(message):
-    if not db.db_client.get_first_client_account():
-        BOT.send_message(message.chat.id, 'Нет рабочего аккаунта')
+    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
+    if not norm_accounts_tuple:
+        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
         return
 
     keyboard_inline = types.InlineKeyboardMarkup()
@@ -301,19 +307,20 @@ def menu_admin_invites(message):
         mes = 'Идёт отправка инвайтов'
     else:
         BOT.send_message(message.chat.id, 'Получение списка групп...')
-        acc_groups_tuple = client_ops.get_acc_groups()
+        account_item = norm_accounts_tuple[0]
+        acc_groups_tuple = client_ops.get_acc_groups(account_item)
         if not acc_groups_tuple:
             BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
             return
 
         _, admin_groups_lst, is_has_groups = acc_groups_tuple
         if not is_has_groups:
-            mes = 'Аккаунт не состоит ни в одной группе'
+            mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе'
             BOT.send_message(message.chat.id, mes)
             return
 
         if not admin_groups_lst:
-            mes = 'Аккаунт должен быть админом (с правами добавления участников) хотя бы в одной группе, в которую будем приглашать новых участников'
+            mes = f'Аккаунт #{account_item.id} должен быть админом (с правами добавления участников) хотя бы в одной группе, в которую будем приглашать новых участников'
             BOT.send_message(message.chat.id, mes)
             return
 
@@ -399,6 +406,7 @@ def menu_admin_accounts_show(message):
 
     else:
         keyboard_inline = types.InlineKeyboardMarkup()
+        keyboard_list = []
         keyboard_list.append(types.InlineKeyboardButton(text='Создать аккаунт',
                              callback_data="menu_admin_accounts_create;1"))
         keyboard_inline.add(*keyboard_list, row_width=1)
@@ -641,7 +649,7 @@ def timer_inviter():
     while True:
         cycle_period = 60  # random.randrange(15, 30)
         try:
-            client_ops.send_invites()
+            client_ops.inviting()
             time.sleep(cycle_period)
         except Exception as ex_tm:
             LOGGER.error(ex_tm)

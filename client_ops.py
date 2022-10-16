@@ -65,18 +65,14 @@ def authorize(id_account: int, code: str) -> bool:
     return True
 
 
-def get_acc_groups():
+def get_acc_groups(account_item: ClientAccount):
     # TODO это не моя функция, нужен рефакторинг
     common_groups_lst = []
     admin_groups_lst = []
     is_has_groups = False
 
-    client_account_item = db.db_client.get_first_client_account()
-    if not client_account_item:
-        return False
-
     set_event_loop(new_event_loop())
-    client = TelegramClient(client_account_item.phone, client_account_item.api_id, client_account_item.api_hash)
+    client = TelegramClient(account_item.phone, account_item.api_id, account_item.api_hash)
     client.connect()
 
     chats = []
@@ -112,10 +108,10 @@ def get_acc_groups():
     return (common_groups_lst, admin_groups_lst, is_has_groups)
 
 
-def get_members_in_group(id_group: int):
+def get_members_in_group(id_group: int, id_account: int):
     # TODO нужен рефакторинг + здесь в начале повтор кода
     members_lst = []
-    client_account_item = db.db_client.get_first_client_account()
+    client_account_item = db.db_client.get_client_account(id_account)
     if not client_account_item:
         return False
 
@@ -166,33 +162,46 @@ def get_members_in_group(id_group: int):
     return members_lst
 
 
-def send_invites():
+def inviting():
     max_invites_per_day = 29
 
     active_session_item = db.db_client.get_active_invite_session()
     if not active_session_item:
         return
 
-    client_account_item = db.db_client.get_first_client_account()
-    if not client_account_item:
-        return
+    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
+    cur_account = None
+    for account_item in norm_accounts_tuple:
+        if db.db_client.get_send_kol(account_item) >= max_invites_per_day:
+            LOGGER.warning(f'max invites reached on acc #{account_item.id}')
+            continue
 
-    if db.db_client.get_send_kol() >= max_invites_per_day:
-        LOGGER.warning('max invites reached')
-        return
+        if is_account_warm(account_item) and db.db_client.get_send_kol(account_item) >= 4:
+            LOGGER.warning(f'account warm and sends >= 4 on acc #{account_item.id}')
+            continue
 
-    if is_account_warm(client_account_item) and db.db_client.get_send_kol() >= 4:
-        LOGGER.warning('account warm and sends >= 4')
-        return
+        last_invite_send_item = db.db_client.get_last_invite_send(account_item)
+        if last_invite_send_item.datetime_send >= datetime.datetime.now() - datetime.timedelta(minutes=4):
+            LOGGER.warning(f'skip inviting in this minute due to 4 mins pause on acc #{account_item.id}')
+            continue
 
-    last_invite_send_item = db.db_client.get_last_invite_send()
-    if last_invite_send_item.datetime_send >= datetime.datetime.now() - datetime.timedelta(minutes=4):
-        LOGGER.warning('skip inviting in this minute due to 4 mins pause')
-        return
+        continuous_send_6_days_tuple = db.db_client.get_continuous_send_6_days(account_item)
+        if len(continuous_send_6_days_tuple >= 6):
+            LOGGER.warning(f'skip inviting in this minute due to 6 days use on acc #{account_item.id}')
+            continue
 
-    continuous_send_6_days_tuple = db.db_client.get_continuous_send_6_days()
-    if len(continuous_send_6_days_tuple >= 6):
-        LOGGER.warning('skip inviting in this minute due to 6 days use')
+        cur_account = account_item
+        break  # если не сработало ни одно ограничение, то выходим из цикла for после первого же прогона
+
+    if cur_account:
+        send_invite(cur_account)
+    else:
+        LOGGER.warning('Not found account_item without restricts')
+
+
+def send_invite(client_account_item: ClientAccount):
+    active_session_item = db.db_client.get_active_invite_session()
+    if not active_session_item:
         return
 
     set_event_loop(new_event_loop())
@@ -213,13 +222,15 @@ def send_invites():
 
     try:
         client(InviteToChannelRequest(target_group_entity, [member_entity]))
-        db.db_client.create_invite_send(active_session_item.id, id_member, INVITE_SEND_RESULTS['sent_normally'])
+        db.db_client.create_invite_send(active_session_item.id, client_account_item.id,
+                                        id_member, INVITE_SEND_RESULTS['sent_normally'])
     except PeerFloodError:
         LOGGER.warning("Getting Flood Error from TG")
         db.db_client.stop_invite_session(INVITE_SESSION_RESULTS['closed_by_flood_warning'])
     except UserPrivacyRestrictedError:
         LOGGER.warning("The user's %s privacy settings is invite_restricted", id_member, exc_info=True)
-        db.db_client.create_invite_send(active_session_item.id, id_member, INVITE_SEND_RESULTS['invite_restricted'])
+        db.db_client.create_invite_send(active_session_item.id, client_account_item.id,
+                                        id_member, INVITE_SEND_RESULTS['invite_restricted'])
         db.db_client.mark_member_invite_restricted(id_member)
     except Exception as ex:
         LOGGER.error(ex)
