@@ -186,7 +186,7 @@ def inviting():
             continue
 
         continuous_send_6_days_tuple = db.db_client.get_continuous_send_6_days(account_item)
-        if len(continuous_send_6_days_tuple >= 6):
+        if len(continuous_send_6_days_tuple) >= 6:
             LOGGER.warning(f'skip inviting in this minute due to 6 days use on acc #{account_item.id}')
             continue
 
