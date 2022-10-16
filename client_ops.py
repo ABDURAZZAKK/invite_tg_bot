@@ -225,8 +225,9 @@ def send_invite(client_account_item: ClientAccount):
         db.db_client.create_invite_send(active_session_item.id, client_account_item.id,
                                         id_member, INVITE_SEND_RESULTS['sent_normally'])
     except PeerFloodError:
-        LOGGER.warning("Getting Flood Error from TG")
-        db.db_client.stop_invite_session(INVITE_SESSION_RESULTS['closed_by_flood_warning'])
+        LOGGER.warning(f"Getting Flood Error from TG on acc #{client_account_item.id}, set him inactive")
+        db.db_client.update_client_account_active(client_account_item.id, 0)
+        # db.db_client.stop_invite_session(INVITE_SESSION_RESULTS['closed_by_flood_warning'])
     except UserPrivacyRestrictedError:
         LOGGER.warning("The user's %s privacy settings is invite_restricted", id_member, exc_info=True)
         db.db_client.create_invite_send(active_session_item.id, client_account_item.id,
