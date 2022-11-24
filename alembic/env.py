@@ -1,8 +1,7 @@
 from logging.config import fileConfig
 
-import config as botconf
-from models.base import Base
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
 
 from alembic import context
 
@@ -19,11 +18,12 @@ if config.config_file_name is not None:
 # for 'autogenerate' support
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
-target_metadata = Base.metadata
+from db.base import Base, engine
+# from  db.model_client import *
+# from  db.model_users import *
+# from  db.model_service import *
 
-config.set_main_option(
-    'sqlalchemy.url', botconf.DB_URL
-)
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
@@ -62,11 +62,12 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    # connectable = engine_from_config(
+    #     config.get_section(config.config_ini_section),
+    #     prefix="sqlalchemy.",
+    #     poolclass=pool.NullPool,
+    # )
+    connectable = engine
 
     with connectable.connect() as connection:
         context.configure(

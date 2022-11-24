@@ -1,674 +1,267 @@
-#!venv/bin/python
-"""Main module"""
-
-import datetime
-import logging
-import logging.handlers as loghandlers
-import os
-import random
-import sys
-import threading
-import time
-
-import telebot
-from telebot import types, util
-
-import client_ops
-import config
-import db
-import states
-from models.model_client import (INVITE_SESSION_RESULTS, AccountFuncClassifier,
-                                 ClientAccount)
-from models.model_users import ROLES
-from states import States as st
-
-BOT = telebot.TeleBot(config.TOKEN_BOT)
+from aiogram import Bot, types
+from aiogram.dispatcher import Dispatcher, FSMContext
+from aiogram.utils import executor
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher.filters import Text
+from state import GlobalState
+from keyboards import get_admin_markup, get_inline_invite_stop_markup
+from enum import Enum
+from enums import URoles, CWorkes, CStatuses
+from answer_generators import sendG_CAccounts, sendG_chats
+import client_api
+from config import TG_TOCKEN
+from repositories.getRepo import get_client_repo, get_user_repo, get_member_repo
 
 
-if not os.path.exists('logs'):
-    os.makedirs('logs')
-LOGGER = logging.getLogger('applog')
-LOGGER.setLevel(logging.INFO)
-formatter = logging.Formatter(
-    '%(asctime)s  %(filename)s  %(funcName)s  %(lineno)d  %(name)s  %(levelname)s: %(message)s')
-log_handler = loghandlers.RotatingFileHandler(
-    './logs/botlog.log',
-    maxBytes=1000000,
-    encoding='utf-8',
-    backupCount=50
-)
-log_handler.setLevel(logging.INFO)
-log_handler.setFormatter(formatter)
-LOGGER.addHandler(log_handler)
-telebot.logger.setLevel(logging.INFO)
-telebot.logger.addHandler(LOGGER)
+storage = MemoryStorage()
+
+bot = Bot(token=TG_TOCKEN)
+dp = Dispatcher(bot, storage=storage)
 
 
-@BOT.message_handler(func=lambda message: message.text == 'Отмена')
-def cancel_to_mainmenu(message):
-    """При команде Отмена из любого места возвращает в главное меню"""
-    cmd_start(message)
+class Bts(Enum):
+    """ Надписи на кнопках """
+    ACCOUNTS = 'Аккаунты'
+    GROUPS = 'Группы'
+    GO_TO_MAIN = '◀️На главную'
+    ADD_ACCOUNT = 'Добавить аккаунт'
+    CANCEL = 'отмена'
+
+MAIN_MARKUP = get_admin_markup((Bts.ACCOUNTS.value, Bts.GROUPS.value))
 
 
-@BOT.chat_member_handler()
-def chat_member_greetings(chat_member_updated: types.ChatMemberUpdated):
-    """Слежение за группами/каналами, где бот админом"""
-    pass
 
+# @dp.message_handler(commands='start', state=None)
+async def start(message: types.Message):
+    u_repo = get_user_repo()
+    user = await u_repo.get_by_id(message.chat.id)
+    if user is None:
+        await u_repo.create(
+            id=message.from_id,
+            first_name=message.chat.first_name,
+            last_name=message.chat.last_name,
+            username=message.chat.username,
+            role_id=URoles.PENDING.value['id']
+            )
+        await message.answer("Ожидание регистрации")
 
-@BOT.callback_query_handler(func=lambda call: True)
-def inline_buttons_router(call):
-    """Роутер для инлайновых кнопок"""
-    if call.message:
-        key = call.data.split(';')[0]
-        is_del_inline_keyb = True
-
-        if key == 'menu_reg_start':
-            menu_reg_start(call.message)
-        elif key == 'menu_admin_accounts_create':
-            menu_admin_accounts_create(call.message)
-        elif key == 'menu_admin_accounts_authorize':
-            menu_admin_accounts_authorize(call.message, call.data)
-        elif key == 'menu_admin_accounts_changefunc':
-            menu_admin_accounts_changefunc(call.message, call.data)
-        elif key == 'menu_admin_parsegroup_select':
-            menu_admin_parsegroup_select(call.message, call.data)
-        elif key == 'menu_admin_invite_group_select':
-            menu_admin_invite_group_select(call.message, call.data)
-        elif key == 'menu_admin_invite_stop':
-            menu_admin_invite_stop(call.message)
-
-        if is_del_inline_keyb:
-            BOT.edit_message_reply_markup(chat_id=call.message.chat.id,
-                                          message_id=call.message.id, reply_markup=types.InlineKeyboardMarkup())
-
-
-@BOT.message_handler(commands=['start'])
-def cmd_start(message):
-    """Старт диалога с ботом"""
-    if message.chat.id < 0:  # если вызвали из чата
-        return
-    mainmenu(message)
-
-
-def menu_reg_about(message):
-    """Инфа перед регистрацией"""
-    if message.from_user.last_name and message.from_user.first_name:
-        fio = f'{message.from_user.last_name} {message.from_user.first_name}'
-    elif message.from_user.last_name or message.from_user.first_name:
-        fio = message.from_user.first_name or message.from_user.last_name
+    elif user.role_id == URoles.ADMIN.value['id']:
+        await GlobalState.admin.set()
+        await message.answer('Вы в главном меню', reply_markup=MAIN_MARKUP)
     else:
-        fio = 'unknown'
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_REG_FIO_GET.name, textval=fio)
-
-    keyboard_inline = types.InlineKeyboardMarkup()
-    keyboard_list = []
-    keyboard_list.append(types.InlineKeyboardButton(text='Зарегистрироваться', callback_data="menu_reg_start;1"))
-    keyboard_inline.add(*keyboard_list, row_width=1)
-
-    mes = 'Нажмите кнопку для отправки запроса на регистрацию'
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
+        await message.answer("Ожидание регистрации")
 
 
-def menu_reg_start(message):
-    """Начало регистрации"""
-    user = db.db_users.get_user(message.chat.id)
-    if user:
-        BOT.send_message(message.chat.id, 'Вы уже зарегистрированы')
-        mainmenu(message)
-        return
-    menu_reg_save(message)
-
-
-def menu_reg_save(message):
-    """Сохранение регистрации"""
-    id_user = message.chat.id
-    fio = db.db_tempvals.get_tmpval(id_user, st.S_REG_FIO_GET.name).textval
-    nick = message.chat.username
-
-    if db.db_users.add_new_user(id_user, fio, nick):
-        BOT.send_message(message.chat.id, 'Регистрация пройдена')
-        states.set_state(message.chat.id, st.S_REG_PENDING.value)
-        menu_reg_pending(message)
+# @dp.message_handler(Text(equals=Bts.ACCOUNTS.value), state=GlobalState.admin)
+async def send_accounts(message: types.Message):
+    c_repo = get_client_repo()
+    accounts = await c_repo.get_all()
+    markup = get_admin_markup((Bts.GO_TO_MAIN.value, Bts.ADD_ACCOUNT.value))
+    if len(accounts):
+        await sendG_CAccounts(message, accounts, reply_markup=markup)
     else:
-        BOT.send_message(message.chat.id, 'Ошибка регистрации')
+        await message.answer("Аккаунтов нет. Выберите действие", reply_markup=markup)
 
 
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_REG_PENDING.value)
-def menu_reg_pending(message):
-    """Ожидание подтверждения"""
-    user = db.db_users.get_user(message.chat.id)
-    if user and user.id_role != ROLES['pending']:
-        cmd_start(message)
+# @dp.callback_query_handler(text_contains='client:delete', state=GlobalState.admin)
+async def account_delete(call: types.CallbackQuery):
+    client_repo = get_client_repo()
+    client_id = call.data.split(':')[-1]
+    await client_repo.delete(client_id)
+    await call.answer(cache_time=60)
+    await call.message.answer("Аккаунт удален.")
+    await call.message.edit_reply_markup(reply_markup=None)
+
+
+# @dp.callback_query_handler(text_contains='client:authorization', state=GlobalState.admin)
+async def send_authorization_code(call: types.CallbackQuery, state: FSMContext):
+    client_repo = get_client_repo()
+    client_id = call.data.split(':')[-1]
+    client_data = await client_repo.get_by_id(client_id)
+    async with state.proxy() as data:
+        data['client_data'] = client_data
+
+    if  await client_api.client_is_authorized(client_data):
+        client_repo = get_client_repo()
+        await client_repo.update(data['client_data'].id, status_id=CStatuses.AUTHORIZED.value['id'])
+        await call.message.answer("Аккаунт авторизован!", reply_markup=MAIN_MARKUP)
     else:
-        keyb_items = ['Обновить']
-        keyboard = make_keyboard(items=keyb_items, is_with_cancel=False)
-        BOT.send_message(message.chat.id, 'Ожидайте подтверждения', reply_markup=keyboard)
+        await client_api.send_phone_hash_code(client_data)
+        await GlobalState.auth_acc.set()
+        await call.message.answer('Введите код: ')
+        await call.message.edit_reply_markup(reply_markup=None)
 
 
-def mainmenu(message):
-    """Главное меню"""
-    user = db.db_users.get_user(message.chat.id)
+# @dp.message_handler(state=GlobalState.auth_acc)
+async def authorization(message: types.Message, state: FSMContext):
+    client_repo = get_client_repo()
+    async with state.proxy() as data:
+        await client_api.authorize(data['client_data'], int(message.text))
+        await client_repo.update(data['client_data'].id, status_id=CStatuses.AUTHORIZED.value['id'])
+        await state.finish()
+        await GlobalState.admin.set()
+        await message.answer("Аккаунт успешно авторизован!", reply_markup=MAIN_MARKUP)
 
-    if not user or user.active == 0:
-        menu_reg_about(message)
+
+# @dp.message_handler(Text(equals=Bts.ADD_ACCOUNT.value), state=GlobalState.admin)
+async def ehco_add_account(message: types.Message):
+    await GlobalState.set_api_id.set()
+    await message.answer('Введите api_id', reply_markup=types.ReplyKeyboardRemove())
+
+
+# @dp.message_handler(Text(equals=Bts.CANCEL.value, ignore_case=True), commands=Bts.CANCEL.value, state='*')
+async def cancel(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None or current_state == 'GlobalState:admin':
         return
-
-    if user and user.reg == 0:
-        menu_reg_pending(message)
-        return
-
-    db.db_tempvals.clear_user_tempvals(message.chat.id)
-    states.set_state(message.chat.id, st.S_MAINMENU.value)
-
-    keyb_items = []
-    row_width = 2
-
-    if user.id_role == ROLES['admin']:
-        keyb_items.append('Группы')
-        keyb_items.append('Парсинг участников')
-        keyb_items.append('Рассылка инвайтов')
-        keyb_items.append('Аккаунты')
-
-    keyboard = make_keyboard(items=keyb_items, row_width=row_width, is_with_cancel=False)
-    mes = 'Вы в главном меню'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
+    await state.finish()
+    await GlobalState.admin.set()
+    await message.reply('OK')
+    await message.answer('Вы в главном меню', reply_markup=MAIN_MARKUP)
 
 
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MAINMENU.value)
-def mainmenu_choice(message):
-    """Обработка нажатия в главном меню"""
-    choice = message.text
-    user = db.db_users.get_user(message.chat.id)
-
-    if user.id_role == ROLES['admin']:
-        if choice == 'Группы':
-            menu_admin_accgroups_show(message)
-        elif choice == 'Парсинг участников':
-            menu_admin_parsegroup(message)
-        elif choice == 'Рассылка инвайтов':
-            menu_admin_invites(message)
-        elif choice == 'Аккаунты':
-            menu_admin_accounts_show(message)
+# @dp.message_handler(state=GlobalState.set_api_id)
+async def set_api_id(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['api_id'] = int(message.text)
+    await GlobalState.set_api_hash.set()
+    await message.answer('Введите api_hash')
 
 
-def menu_admin_accgroups_show(message):
-    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
-    if not norm_accounts_tuple:
-        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
-        return
-    BOT.send_message(message.chat.id, 'Получение списка групп...')
+# @dp.message_handler(state=GlobalState.set_api_hash)
+async def set_api_hash(message: types.Message, state: FSMContext):
+    async with state.proxy() as data:
+        data['api_hash'] = message.text
+    await GlobalState.set_phone.set()
+    await message.answer('Введите номер телефона в формате: +79998887766')
 
-    for account_item in norm_accounts_tuple:
-        acc_groups_tuple = client_ops.get_acc_groups(account_item)
-        if not acc_groups_tuple:
-            BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
-            return
 
-        common_groups_lst, admin_groups_lst, is_has_groups = acc_groups_tuple
-        if not is_has_groups:
-            mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
-            BOT.send_message(message.chat.id, mes)
-            return
+# @dp.message_handler(state=GlobalState.set_phone)
+async def set_phone(message: types.Message, state: FSMContext):
+    c_repo = get_client_repo()
+    async with state.proxy() as data:
+        data['phone'] = message.text
+    
+    async with state.proxy() as data:
+        await c_repo.create(
+            work_id=CWorkes.UNWORKING.value['id'],
+            status_id=CStatuses.WAITING_AUTHORIZATION.value['id'],
+            api_id=data['api_id'],
+            api_hash=data['api_hash'],
+            phone=data['phone']
+        )
+    await message.answer("Аккаунт сохранен")
 
-        mes = ''
+    await GlobalState.admin.set()
+    await message.answer('Вы в главном меню', reply_markup=MAIN_MARKUP)
 
-        mes += f'🔸<b>Группы, в которых состоит аккаунт #{account_item.id}:</b>\n'
-        if common_groups_lst:
-            for common_group_item in common_groups_lst:
-                _, title_group = common_group_item
-                mes += f'{title_group}\n'
+
+# @dp.message_handler(Text(equals=Bts.GROUPS.value), state=GlobalState.admin)
+async def send_chats(message: types.Message):
+    client_repo = get_client_repo()
+    client  = await client_repo.get_by_status_id(CStatuses.AUTHORIZED.value['id'], limit=1)
+    if client:
+        chats = await client_api.get_chats(client_data=client[0])
+        if chats:
+            await sendG_chats(message, client[0], chats)
         else:
-            mes += '-'
-
-        mes += '\n'
-
-        mes += f'🔸<b>Собственные группы (где аккаунт #{account_item.id} имеет роль админа):</b>\n'
-        if admin_groups_lst:
-            for admin_group_item in admin_groups_lst:
-                _, title_group = admin_group_item
-                mes += f'{title_group}\n'
-        else:
-            mes += '-'
-
-        BOT.send_message(message.chat.id, mes, parse_mode='html')
-
-
-def menu_admin_parsegroup(message):
-    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
-    if not norm_accounts_tuple:
-        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
-        return
-    BOT.send_message(message.chat.id, 'Получение списка групп...')
-
-    account_item = norm_accounts_tuple[0]
-    acc_groups_tuple = client_ops.get_acc_groups(account_item)
-    if not acc_groups_tuple:
-        BOT.send_message(message.chat.id, f'Ошибка загрузки групп у аккаунта #{account_item.id}')
-        return
-
-    common_groups_lst, _, is_has_groups = acc_groups_tuple
-    if not is_has_groups:
-        mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе\nНужно от имени аккаунта вручную вступить в группы, которые будем парсить\n'
-        BOT.send_message(message.chat.id, mes)
-        return
-
-    keyboard_inline = types.InlineKeyboardMarkup()
-    keyboard_list = []
-    for common_group_item in common_groups_lst:
-        id_group, title_group = common_group_item
-        keyboard_list.append(types.InlineKeyboardButton(
-            text=title_group, callback_data=f"menu_admin_parsegroup_select;{id_group};{account_item.id}"))
-    keyboard_inline.add(*keyboard_list, row_width=1)
-
-    mes = 'Выберите группу, из которой нужно сохранить список участников'
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
-
-
-def menu_admin_parsegroup_select(message, data):
-    BOT.send_message(message.chat.id, 'Сохранение участников...')
-    params = data.split(';')
-    id_group = int(params[1])
-    id_account = int(params[2])
-    menu_admin_parsegroup_savemembers(message, id_group, id_account)
-
-
-def menu_admin_parsegroup_savemembers(message, id_group, id_account):
-    members_lst = client_ops.get_members_in_group(id_group, id_account)
-    if not members_lst:
-        BOT.send_message(message.chat.id, 'Ошибка получения списка участников')
-        return
-
-    kol_new = db.db_client.add_new_members(members_lst)
-    if kol_new is None:
-        BOT.send_message(message.chat.id, 'Ошибка записи списка участников в базу')
-        return
-
-    mes = 'Успешно сохранено\n\n'
-    mes += f'В группе участников: {len(members_lst)}\n'
-    mes += f'Из них сохранено новых в базу: {kol_new}'
-    BOT.send_message(message.chat.id, mes)
-    mainmenu(message)
-
-
-def menu_admin_invites(message):
-    norm_accounts_tuple = db.db_client.get_norm_client_accounts()
-    if not norm_accounts_tuple:
-        BOT.send_message(message.chat.id, 'Нет рабочих аккаунтов')
-        return
-
-    keyboard_inline = types.InlineKeyboardMarkup()
-    keyboard_list = []
-    active_session_item = db.db_client.get_active_invite_session()
-    if active_session_item:
-        keyboard_list.append(types.InlineKeyboardButton(text='Остановить', callback_data="menu_admin_invite_stop;1"))
-        keyboard_inline.add(*keyboard_list, row_width=1)
-        mes = 'Идёт отправка инвайтов'
+            await message.answer("Групп нет.")
     else:
-        BOT.send_message(message.chat.id, 'Получение списка групп...')
-        account_item = norm_accounts_tuple[0]
-        acc_groups_tuple = client_ops.get_acc_groups(account_item)
-        if not acc_groups_tuple:
-            BOT.send_message(message.chat.id, 'Ошибка загрузки групп')
-            return
-
-        _, admin_groups_lst, is_has_groups = acc_groups_tuple
-        if not is_has_groups:
-            mes = f'Аккаунт #{account_item.id} не состоит ни в одной группе'
-            BOT.send_message(message.chat.id, mes)
-            return
-
-        if not admin_groups_lst:
-            mes = f'Аккаунт #{account_item.id} должен быть админом (с правами добавления участников) хотя бы в одной группе, в которую будем приглашать новых участников'
-            BOT.send_message(message.chat.id, mes)
-            return
-
-        for admin_group_item in admin_groups_lst:
-            id_group, title_group = admin_group_item
-            keyboard_list.append(types.InlineKeyboardButton(
-                text=title_group, callback_data=f"menu_admin_invite_group_select;{id_group}"))
-        keyboard_inline.add(*keyboard_list, row_width=1)
-        mes = 'Выберите группу, в которую будем приглашать участников'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
-
-
-def menu_admin_invite_group_select(message, data):
-    params = data.split(';')
-    id_group_destination = int(params[1])
-    menu_admin_invite_start(message, id_group_destination)
-
-
-def menu_admin_invite_start(message, id_group_destination):
-    if db.db_client.start_invite_session(id_group_destination):
-        BOT.send_message(message.chat.id, 'Рассылка инвайтов начата')
-        mainmenu(message)
-    else:
-        BOT.send_message(message.chat.id, 'Ошибка старта рассылки')
-
-
-def menu_admin_invite_stop(message):
-    if db.db_client.stop_invite_session(INVITE_SESSION_RESULTS['closed_manually']):
-        BOT.send_message(message.chat.id, 'Рассылка инвайтов остановлена')
-        mainmenu(message)
-    else:
-        BOT.send_message(message.chat.id, 'Ошибка остановки рассылки')
-
-
-def menu_admin_accounts_show(message):
-    BOT.send_message(message.chat.id, 'Проверка аккаунтов...')
-    client_accounts_tuple = db.db_client.get_all_client_accounts()
-
-    if client_accounts_tuple:
-        for client_account in client_accounts_tuple:
-            client_ops.check_account_availability(client_account.id)
-
-            keyboard_inline = types.InlineKeyboardMarkup()
-            keyboard_list = []
-            keyboard_list.append(types.InlineKeyboardButton(text='Сменить назначение',
-                                 callback_data=f"menu_admin_accounts_changefunc;{client_account.id}"))
-
-            mes = f'<b>Аккаунт #{client_account.id}</b>\n'
-            mes += f'api_id: {client_account.api_id}\n'
-            mes += f'api_hash: {client_account.api_hash}\n'
-            mes += f'телефон: {client_account.phone}\n\n'
-
-            account_func_item = db.db_classifiers.find_classifier_object(
-                AccountFuncClassifier, id_object=client_account.id_account_func)
-            mes += f'📌<b>Назначение аккаунта:</b> {account_func_item.name}\n'
-
-            if client_account.banned == 1:
-                mes += '🔴<b>Статус:</b> заблокирован Телеграмом'
-            elif client_account.active == 0:
-                mes += '⚫<b>Статус:</b> неактивен'
-            elif client_account.authorized == 0:
-                mes += '🟡<b>Статус:</b> требуется авторизация'
-                keyboard_list.append(types.InlineKeyboardButton(text='Авторизовать',
-                                     callback_data=f"menu_admin_accounts_authorize;{client_account.id}"))
-            else:
-                mes += '🟢<b>Статус:</b> активен'
-
-            if is_account_warm(client_account):
-                mes += '\n'
-                mes += '🔥<b>Аккаунт на прогреве</b>'
-
-            keyboard_inline.add(*keyboard_list, row_width=1)
-            BOT.send_message(message.chat.id, mes, parse_mode='html', reply_markup=keyboard_inline)
-
-        keyboard_inline = types.InlineKeyboardMarkup()
-        keyboard_list = []
-        keyboard_list.append(types.InlineKeyboardButton(text='Добавить новый',
-                             callback_data=f"menu_admin_accounts_create;1"))
-        keyboard_inline.add(*keyboard_list, row_width=1)
-        mes = 'Новый аккаунт?'
-        BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
-
-    else:
-        keyboard_inline = types.InlineKeyboardMarkup()
-        keyboard_list = []
-        keyboard_list.append(types.InlineKeyboardButton(text='Создать аккаунт',
-                             callback_data="menu_admin_accounts_create;1"))
-        keyboard_inline.add(*keyboard_list, row_width=1)
-        mes = 'Нет клиентских аккаунтов'
-        BOT.send_message(message.chat.id, mes, reply_markup=keyboard_inline)
-
-
-def menu_admin_accounts_create(message):
-    menu_admin_accounts_create_api_id_ask(message)
-
-
-def menu_admin_accounts_create_api_id_ask(message):
-    """Новый клиентский аккаунт - запрос api_id"""
-    keyboard = make_keyboard(is_with_cancel=False)
-    mes = 'Напишите api_id'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
-    states.set_state(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_ID_ASK.value)
-
-
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_CREATEACC_API_ID_ASK.value)
-def menu_admin_accounts_create_api_id_save(message):
-    """Новый клиентский аккаунт - сохранение api_id"""
-    api_id = message.text
-    if len(api_id) > 100:
-        BOT.send_message(message.chat.id, 'Слишком длинный api_id')
-        return
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_ID_ASK.name, textval=api_id)
-    menu_admin_accounts_create_api_hash_ask(message)
-
-
-def menu_admin_accounts_create_api_hash_ask(message):
-    """Новый клиентский аккаунт - запрос api_hash"""
-    keyboard = make_keyboard(is_with_cancel=False)
-    mes = 'Напишите api_hash'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
-    states.set_state(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_HASH_ASK.value)
-
-
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_CREATEACC_API_HASH_ASK.value)
-def menu_admin_accounts_create_api_hash_save(message):
-    """Новый клиентский аккаунт - сохранение api_hash"""
-    api_hash = message.text
-    if len(api_hash) > 100:
-        BOT.send_message(message.chat.id, 'Слишком длинный api_hash')
-        return
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_HASH_ASK.name, textval=api_hash)
-    menu_admin_accounts_create_phone_ask(message)
-
-
-def menu_admin_accounts_create_phone_ask(message):
-    """Новый клиентский аккаунт - запрос телефона"""
-    keyboard = make_keyboard()
-    mes = 'Напишите номер телефона'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
-    states.set_state(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_PHONE_ASK.value)
-
-
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_CREATEACC_API_PHONE_ASK.value)
-def menu_admin_accounts_create_phone_save(message):
-    """Новый клиентский аккаунт - сохранение телефона"""
-    phone = message.text.replace(' ', '').replace('-', '').replace('(', '').replace(')', '').replace('+', '')
-    if len(phone) > 20:
-        BOT.send_message(message.chat.id, 'Слишком длинный номер')
-        return
-    if not str.isdigit(phone):
-        BOT.send_message(message.chat.id, 'Неправильно указан номер телефона')
-        return
-
-    phone_str_lst = list(phone)
-    if phone_str_lst[0] == '8':
-        phone_str_lst[0] = '7'
-    phone = "".join(phone_str_lst)
-    phone = f'+{phone}'
-
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_CREATEACC_API_PHONE_ASK.name, textval=phone)
-    menu_admin_accounts_create_save(message)
-
-
-def menu_admin_accounts_create_save(message):
-    """Сохранение нового клиентского аккаунта"""
-    id_user = message.chat.id
-    api_id = db.db_tempvals.get_tmpval(id_user, st.S_MENU_ADMIN_CREATEACC_API_ID_ASK.name).textval
-    api_hash = db.db_tempvals.get_tmpval(id_user, st.S_MENU_ADMIN_CREATEACC_API_HASH_ASK.name).textval
-    phone = db.db_tempvals.get_tmpval(id_user, st.S_MENU_ADMIN_CREATEACC_API_PHONE_ASK.name).textval
-
-    if db.db_client.add_new_client_account(api_id, api_hash, phone):
-        BOT.send_message(message.chat.id, 'Клиентский аккаунт добавлен')
-        menu_admin_accounts_show(message)
-        mainmenu(message)
-    else:
-        BOT.send_message(message.chat.id, 'Ошибка добавления клиентского аккаунта')
-
-
-def menu_admin_accounts_authorize(message, data):
-    params = data.split(';')
-    id_account = int(params[1])
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_AUTHACC_IDACCOUNT_GET.name, intval=id_account)
-
-    if not client_ops.send_auth_code(id_account):
-        BOT.send_message(message.chat.id, 'Ошибка запроса кода авторизации')
-        return
-
-    menu_admin_accounts_authorize_code_ask(message)
-
-
-def menu_admin_accounts_authorize_code_ask(message):
-    id_account = db.db_tempvals.get_tmpval(
-        message.chat.id, st.S_MENU_ADMIN_AUTHACC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
-    client_account_item = db.db_client.get_client_account(id_account)
-    keyboard = make_keyboard(is_with_cancel=False)
-    mes = f'Напишите код авторизации, который пришёл на номер {client_account_item.phone}'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
-    states.set_state(message.chat.id, st.S_MENU_ADMIN_AUTHACC_CODE_ASK.value)
-
-
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_AUTHACC_CODE_ASK.value)
-def menu_admin_accounts_authorize_code_save(message):
-    code = message.text
-    if len(code) > 100:
-        BOT.send_message(message.chat.id, 'Слишком длинный код')
-        return
-
-    id_account = db.db_tempvals.get_tmpval(
-        message.chat.id, st.S_MENU_ADMIN_AUTHACC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
-    if client_ops.authorize(id_account, code):
-        BOT.send_message(message.chat.id, 'Авторизация пройдена успешно')
-    else:
-        BOT.send_message(message.chat.id, 'Ошибка авторизации')
-    mainmenu(message)
-
-
-def menu_admin_accounts_changefunc(message, data):
-    params = data.split(';')
-    id_account = int(params[1])
-    db.db_tempvals.set_tmpval(message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, intval=id_account)
-    menu_admin_accounts_changefunc_func_ask(message)
-
-
-def menu_admin_accounts_changefunc_func_ask(message):
-    id_account = db.db_tempvals.get_tmpval(
-        message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
-    client_account_item = db.db_client.get_client_account(id_account)
-    available_funcs_tuple = db.db_client.get_available_acc_funcs(client_account_item.id_account_func)
-
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard_list = []
-    for func_item in available_funcs_tuple:
-        keyboard_list.append(func_item.name)
-    keyboard.add(*keyboard_list, row_width=2)
-
-    mes = f'Какое назначение сделать аккаунту #{client_account_item.id}?'
-
-    BOT.send_message(message.chat.id, mes, reply_markup=keyboard)
-    states.set_state(message.chat.id, st.S_MENU_ADMIN_ACCFUNC_FUNC_ASK.value)
-
-
-@BOT.message_handler(func=lambda message: states.get_cur_state(message.chat.id) == st.S_MENU_ADMIN_ACCFUNC_FUNC_ASK.value)
-def menu_admin_accounts_changefunc_func_save(message):
-    choice = message.text
-    id_account = db.db_tempvals.get_tmpval(
-        message.chat.id, st.S_MENU_ADMIN_ACCFUNC_IDACCOUNT_GET.name, is_delete_after_read=False).intval
-    client_account_item = db.db_client.get_client_account(id_account)
-    available_funcs_tuple = db.db_client.get_available_acc_funcs(client_account_item.id_account_func)
-    if choice not in [classif.name for classif in available_funcs_tuple]:
-        BOT.send_message(message.chat.id, 'Выберите из предложенного!')
-        return
-
-    new_func_item = db.db_classifiers.find_classifier_object(AccountFuncClassifier, name_object=choice)
-    if db.db_client.set_acc_func(id_account, new_func_item.id):
-        BOT.send_message(message.chat.id, 'Назначение изменено')
-        mainmenu(message)
-    else:
-        BOT.send_message(message.chat.id, 'Ошибка изменения назначения')
-
-
-def is_account_warm(client_account_item: ClientAccount) -> bool:  # TODO копия из client_ops.py
-    warm_days = 5
-    if client_account_item.date_reg >= datetime.datetime.now() - datetime.timedelta(days=warm_days):
-        return True
-    return False
-
-
-def make_keyboard(items=None, row_width=1, fill_with_classifier=None, is_classifier_reverse=False, is_with_cancel=True):
-    """Создание обычной клавиатуры с параметрами"""
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard_list = []
-
-    if fill_with_classifier:
-        classifier_items = db.db_classifiers.get_classifier_items(
-            fill_with_classifier, is_reverse=is_classifier_reverse)
-        for item in classifier_items:
-            keyboard_list.append(item.name)
-
-    if items:
-        for item in items:
-            keyboard_list.append(item)
-
-    if is_with_cancel:
-        keyboard_list.append('Отмена')
-
-    if not items and not fill_with_classifier and not is_with_cancel:
-        return types.ReplyKeyboardRemove()
-
-    keyboard.add(*keyboard_list, row_width=row_width)
-    return keyboard
-
-
-@BOT.message_handler(content_types=['text'])
-def dummy_message(message):
-    """Любая другая текстовая команда"""
-    cmd_start(message)
-
-
-def startup_actions():
-    """Стартовые действия"""
-    pass
-
-
-def timer_1min():
-    """Таймер выполняющийся каждую 1 минуту"""
-    LOGGER.info('Timer_1min thread started...')
-    cycle_period = 60
-    while True:
+        await message.answer("Нет авторизованых аккаунтов")
+        
+
+async def parsing(call: types.CallbackQuery):
+    await call.answer(cache_time=60)
+    await call.message.edit_reply_markup(reply_markup=None)
+
+    client_repo = get_client_repo()
+    client_id, chat_id = call.data.split(':')[1:]
+    client_data = await client_repo.get_by_id(int(client_id))
+    members = await client_api.get_members(client_data, int(chat_id))
+    member_repo = get_member_repo()
+    new_mem_count = 0
+    for mem in members:
         try:
-            pass
+            await member_repo.create(
+                id=mem['id'],
+                first_name=mem['first_name'],
+                last_name=mem['last_name'],
+                username=mem['username'],
+                chat_id=mem['chat_id'],
+            )
+            new_mem_count+=1
+        except:
+            continue
+    await call.message.answer(f"Добавлено в базу <b>{new_mem_count}</b> новых пользователей",parse_mode="html")
+    
 
-            time.sleep(cycle_period)
-        except Exception as ex_tm:
-            LOGGER.error(ex_tm)
-            time.sleep(cycle_period)
+# @dp.callback_query_handler(text_contains='inviting:', state=GlobalState.admin)
+async def send_inviting_result(call: types.CallbackQuery):
+    await call.answer(cache_time=60)
+    await call.message.edit_reply_markup(reply_markup=None)
+    chat_id = int(call.data.split(':')[-1])
+    client_repo = get_client_repo()
+    member_repo = get_member_repo()
+    active_accs = await client_repo.get_by_status_id(CStatuses.AUTHORIZED.value['id'])
+    active_accs = [acc for acc in active_accs if acc.work_id == CWorkes.UNWORKING.value['id']]
+    client_api.stop_invite = False
+    members = await member_repo.get_all()
+    msg = await call.message.answer(f'Отправленно 0/{len(members)} инвайтов'
+                                    , reply_markup=get_inline_invite_stop_markup())
+    await client_api.inviting(msg, active_accs, chat_id, members)
 
 
-def timer_inviter():
-    """Таймер инвайтера"""
-    LOGGER.info('Timer_inviter thread started...')
-    while True:
-        cycle_period = 60  # random.randrange(15, 30)
-        try:
-            client_ops.inviting()
-            time.sleep(cycle_period)
-        except Exception as ex_tm:
-            LOGGER.error(ex_tm)
-            time.sleep(cycle_period)
+# @dp.callback_query_handler(text_contains='stop_inviting:', state=GlobalState.admin)
+async def stop_inviting(call: types.CallbackQuery):
+    client_api.stop_invite = True
+    await call.answer(cache_time=60)
+    await call.message.edit_reply_markup(reply_markup=None)
 
+
+# @dp.message_handler(Text(equals=Bts.GO_TO_MAIN.value), state=GlobalState.admin)
+async def go_to_main(message: types.Message):
+    await message.answer('Вы в главном меню', reply_markup=MAIN_MARKUP)
+
+
+# @dp.message_handler()
+async def ehco_waiting_for_registration(message: types.Message):
+    await message.answer("Ожидание регистрации")
+
+
+async def test(message: types.Message, state: FSMContext):
+    client_repo = get_client_repo()
+    client_data = await client_repo.get_by_id(2)
+    await client_api.send_phone_hash_code(client_data)
+
+
+
+def register_handlers_admin(dp: Dispatcher):
+
+    # dp.register_message_handler(test,Text(equals='conn'))
+
+
+    dp.register_message_handler(start, commands='start', state=None)
+
+    dp.register_message_handler(send_accounts, Text(equals=Bts.ACCOUNTS.value), state=GlobalState.admin)
+    dp.register_message_handler(ehco_add_account, Text(equals=Bts.ADD_ACCOUNT.value), state=GlobalState.admin)
+    dp.register_message_handler(cancel, Text(equals=Bts.CANCEL.value, ignore_case=True),  state='*') # любой кроме admin
+    dp.register_message_handler(set_api_id, state=GlobalState.set_api_id)
+    dp.register_message_handler(set_api_hash, state=GlobalState.set_api_hash)
+    dp.register_message_handler(set_phone, state=GlobalState.set_phone)
+    dp.register_callback_query_handler(account_delete,text_contains='client:delete', state=GlobalState.admin)
+    dp.register_callback_query_handler(send_authorization_code, text_contains='client:authorization', state=GlobalState.admin)
+    dp.register_message_handler(authorization,state=GlobalState.auth_acc)
+
+    dp.register_message_handler(send_chats, Text(equals=Bts.GROUPS.value), state=GlobalState.admin)
+    dp.register_callback_query_handler(parsing, text_contains='parsing:', state=GlobalState.admin)
+    dp.register_callback_query_handler(send_inviting_result, text_contains='inviting:', state=GlobalState.admin)
+    dp.register_callback_query_handler(stop_inviting, text_contains='stop_inviting:', state=GlobalState.admin)
+    dp.register_message_handler(go_to_main, Text(equals=Bts.GO_TO_MAIN.value), state=GlobalState.admin)
+    dp.register_message_handler(ehco_waiting_for_registration)
+
+    
+
+register_handlers_admin(dp)
 
 if __name__ == '__main__':
-    startup_actions()
-
-    TIMER_1MIN_THREAD = threading.Thread(target=timer_1min)
-    TIMER_1MIN_THREAD.daemon = True
-    TIMER_1MIN_THREAD.start()
-
-    TIMER_INVITER_THREAD = threading.Thread(target=timer_inviter)
-    TIMER_INVITER_THREAD.daemon = True
-    TIMER_INVITER_THREAD.start()
-
-    try:
-        BOT.infinity_polling(allowed_updates=util.update_types)
-    except Exception as ex:
-        LOGGER.error(ex)
-        sys.exit()
+    executor.start_polling(dp, skip_updates=True)
