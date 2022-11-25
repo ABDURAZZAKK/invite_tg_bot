@@ -11,7 +11,7 @@ from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.tl.functions.messages import AddChatUserRequest
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty, InputPeerChat
-
+from keyboards import get_inline_invite_stop_markup
 
 # logging.basicConfig(format='[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s', level=logging.DEBUG)
 
@@ -124,9 +124,9 @@ async def get_members(client_data, chat_id) -> List[dict]:
 
 
 async def _send_invite(client: TelegramClient, target_chat, member):
-    target_chat_entity = await client.get_entity(target_chat)
-    member_entity = await client.get_entity(member.id)
     try:
+        target_chat_entity = await client.get_entity(target_chat)
+        member_entity = await client.get_entity(member.id)
         try:
             await client(InviteToChannelRequest(target_chat_entity, [member_entity]))
         except:
@@ -134,6 +134,8 @@ async def _send_invite(client: TelegramClient, target_chat, member):
     except UserAlreadyParticipantError: 
         pass
     except UserPrivacyRestrictedError:
+        pass
+    except ValueError:
         pass
 
 async def inviting(message: types.Message, active_accs, target_chat, members):
@@ -145,11 +147,13 @@ async def inviting(message: types.Message, active_accs, target_chat, members):
             if stop_invite:
                 break
             client = next(clients)
-            await _send_invite(client, target_chat, member)
+            try:
+                await _send_invite(client, target_chat, member)
+            except:
+                continue
             curr_count+=1
-            await message.edit_text(f'Отправленно {curr_count}/{mem_count} инвайтов')
+            await message.edit_text(f'Отправленно {curr_count}/{mem_count} инвайтов',reply_markup=get_inline_invite_stop_markup())
             await asyncio.sleep(3000/len(active_accs))
-
 
 async def disconnect_all() -> None:
     clients = clients_context.get()
