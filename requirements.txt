@@ -1,0 +1,7 @@
+aiogram==2.23.1
+aiosqlite==0.17.0
+alembic==1.8.1
+databases==0.6.2
+SQLAlchemy==1.4.41
+sqlalchemy-repr==0.0.2
+Telethon==1.25.2

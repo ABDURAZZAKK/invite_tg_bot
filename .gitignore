@@ -3,9 +3,8 @@
 /config.py
 /test_*
 /*.session
-/tgpars_reference
 result*
-db.db
+/*.db
 sessions/*
 # Created by https://www.toptal.com/developers/gitignore/api/python,visualstudiocode
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,visualstudiocode

@@ -9,13 +9,13 @@ from enum import Enum
 from enums import URoles, CWorkes, CStatuses
 from answer_generators import sendG_CAccounts, sendG_chats
 import client_api
-from config import TG_TOCKEN
+from config import TG_TOKEN
 from repositories.getRepo import get_client_repo, get_user_repo, get_member_repo
 
 
 storage = MemoryStorage()
 
-bot = Bot(token=TG_TOCKEN)
+bot = Bot(token=TG_TOKEN)
 dp = Dispatcher(bot, storage=storage)
 
 
