@@ -1,3 +1,4 @@
+#!venv/bin/python
 from aiogram import Bot, types
 from aiogram.dispatcher import Dispatcher, FSMContext
 from aiogram.utils import executor
