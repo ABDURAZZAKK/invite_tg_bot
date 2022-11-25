@@ -100,7 +100,7 @@ async def get_chats(client_data):
     ))
     chats = []
     for chat in dialogs.chats:
-        if hasattr(chat, "participants_count") and chat.participants_count > 0:
+        if hasattr(chat, "participants_count") and chat.participants_count and chat.participants_count > 0:
                 chats.append(chat)
 
     return chats
