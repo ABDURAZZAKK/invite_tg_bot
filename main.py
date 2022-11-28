@@ -10,13 +10,13 @@ from enum import Enum
 from enums import URoles, CWorkes, CStatuses
 from answer_generators import sendG_CAccounts, sendG_chats
 import client_api
-from config import TG_TOKEN
+from config import TG_TOCKEN
 from repositories.getRepo import get_client_repo, get_user_repo, get_member_repo
-
+from telethon.errors.rpcerrorlist import PhoneCodeExpiredError
 
 storage = MemoryStorage()
 
-bot = Bot(token=TG_TOKEN)
+bot = Bot(token=TG_TOCKEN)
 dp = Dispatcher(bot, storage=storage)
 
 
@@ -97,11 +97,18 @@ async def send_authorization_code(call: types.CallbackQuery, state: FSMContext):
 async def authorization(message: types.Message, state: FSMContext):
     client_repo = get_client_repo()
     async with state.proxy() as data:
-        await client_api.authorize(data['client_data'], int(message.text))
-        await client_repo.update(data['client_data'].id, status_id=CStatuses.AUTHORIZED.value['id'])
-        await state.finish()
-        await GlobalState.admin.set()
-        await message.answer("Аккаунт успешно авторизован!", reply_markup=MAIN_MARKUP)
+        try:
+            await client_api.authorize(data['client_data'], int(message.text))
+            await client_repo.update(data['client_data'].id, status_id=CStatuses.AUTHORIZED.value['id'])
+            await state.finish()
+            await GlobalState.admin.set()
+            await message.answer("Аккаунт успешно авторизован!", reply_markup=MAIN_MARKUP)
+        except PhoneCodeExpiredError as e:
+            print(e)
+            await message.answer("Авторизация не возможна, попробуйте другйо аккаунт", reply_markup=MAIN_MARKUP)
+            await state.finish()
+            await GlobalState.admin.set()
+
 
 
 # @dp.message_handler(Text(equals=Bts.ADD_ACCOUNT.value), state=GlobalState.admin)
@@ -170,7 +177,7 @@ async def send_chats(message: types.Message):
     else:
         await message.answer("Нет авторизованых аккаунтов")
         
-
+# @dp.callback_query_handler(text_contains='parsing:', state=GlobalState.admin)
 async def parsing(call: types.CallbackQuery):
     await call.answer(cache_time=60)
     await call.message.edit_reply_markup(reply_markup=None)
