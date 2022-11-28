@@ -124,19 +124,13 @@ async def get_members(client_data, chat_id) -> List[dict]:
 
 
 async def _send_invite(client: TelegramClient, target_chat, member):
+    target_chat_entity = await client.get_entity(target_chat)
+    member_entity = await client.get_entity(member.id)  
     try:
-        target_chat_entity = await client.get_entity(target_chat)
-        member_entity = await client.get_entity(member.id)
-        try:
-            await client(InviteToChannelRequest(target_chat_entity, [member_entity]))
-        except:
-            await client(AddChatUserRequest(target_chat, member_entity,fwd_limit=100))
-    except UserAlreadyParticipantError: 
-        pass
-    except UserPrivacyRestrictedError:
-        pass
-    except ValueError:
-        pass
+        await client(InviteToChannelRequest(target_chat_entity, [member_entity]))
+    except:
+        await client(AddChatUserRequest(target_chat, member_entity,fwd_limit=100))
+
 
 async def inviting(message: types.Message, active_accs, target_chat, members):
     clients = cicle([await get_client(acc) for acc in active_accs])
@@ -149,8 +143,16 @@ async def inviting(message: types.Message, active_accs, target_chat, members):
             client = next(clients)
             try:
                 await _send_invite(client, target_chat, member)
-            except:
+            except UserAlreadyParticipantError as e: 
+                print(e)
                 continue
+            except UserPrivacyRestrictedError as e:
+                print(e)
+                continue
+            except ValueError as e:
+                print(e)
+                continue
+
             curr_count+=1
             await message.edit_text(f'Отправленно {curr_count}/{mem_count} инвайтов',reply_markup=get_inline_invite_stop_markup())
             await asyncio.sleep(3000/len(active_accs))
